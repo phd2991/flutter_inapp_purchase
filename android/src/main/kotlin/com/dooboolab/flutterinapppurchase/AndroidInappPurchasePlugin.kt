@@ -152,8 +152,8 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         when(call.method){
             "showInAppMessages" -> showInAppMessages(safeChannel)
             "consumeAllItems" -> consumeAllItems(safeChannel, call)
-            "getProducts" -> getProductsByType(BillingClient.SkuType.INAPP, call, safeChannel)
-            "getSubscriptions" -> getProductsByType(BillingClient.SkuType.SUBS, call, safeChannel)
+            "getProducts" -> getProductsByType(BillingClient.ProductType.INAPP, call, safeChannel)
+            "getSubscriptions" -> getProductsByType(BillingClient.ProductType.SUBS, call, safeChannel)
             "getAvailableItemsByType" -> getAvailableItemsByType(call, safeChannel)
             "getPurchaseHistoryByType" -> getPurchaseHistoryByType(call, safeChannel)
             "buyItemByType" -> buyProduct(call, safeChannel)
@@ -206,7 +206,8 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
     ) {
         try {
             val array = ArrayList<String>()
-            billingClient!!.queryPurchasesAsync(BillingClient.SkuType.INAPP)
+            val params = QueryPurchasesParams.newBuilder().apply { setProductType(BillingClient.ProductType.INAPP) }.build()
+            billingClient!!.queryPurchasesAsync(params)
             { billingResult, skuDetailsList ->
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     if (skuDetailsList.size == 0) {
@@ -252,9 +253,10 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         call: MethodCall,
         safeChannel: MethodResultWrapper
     ) {
-        val type = if(call.argument<String>("type") == "subs") BillingClient.SkuType.SUBS else BillingClient.SkuType.INAPP
+        val type = if(call.argument<String>("type") == "subs") BillingClient.ProductType.SUBS else BillingClient.ProductType.INAPP
+        val params = QueryPurchasesParams.newBuilder().apply { setProductType(type) }.build()
         val items = JSONArray()
-        billingClient!!.queryPurchasesAsync(type) { billingResult, skuDetailsList ->
+        billingClient!!.queryPurchasesAsync(params) { billingResult, skuDetailsList ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                 for (purchase in skuDetailsList) {
                     val item = JSONObject()
@@ -265,9 +267,9 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
                     item.put("purchaseToken", purchase.purchaseToken)
                     item.put("signatureAndroid", purchase.signature)
                     item.put("purchaseStateAndroid", purchase.purchaseState)
-                    if (type == BillingClient.SkuType.INAPP) {
+                    if (type == BillingClient.ProductType.INAPP) {
                         item.put("isAcknowledgedAndroid", purchase.isAcknowledged)
-                    } else if (type == BillingClient.SkuType.SUBS) {
+                    } else if (type == BillingClient.ProductType.SUBS) {
                         item.put("autoRenewingAndroid", purchase.isAutoRenewing)
                     }
                     items.put(item)
@@ -355,10 +357,11 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         call: MethodCall,
         safeChannel: MethodResultWrapper
     ) {
-        val type = if(call.argument<String>("type") == "subs") BillingClient.SkuType.SUBS else BillingClient.SkuType.INAPP
+        val type = if(call.argument<String>("type") == "subs") BillingClient.ProductType.SUBS else BillingClient.ProductType.INAPP
+        val params = QueryPurchaseHistoryParams.newBuilder().apply { setProductType(type) }.build()
 
         billingClient!!.queryPurchaseHistoryAsync(
-            type,
+            params,
             PurchaseHistoryResponseListener { billingResult, purchaseHistoryRecordList ->
                 if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                     val errorData = BillingError.getErrorFromResponseData(billingResult.responseCode)
@@ -391,21 +394,21 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         call: MethodCall,
         safeChannel: MethodResultWrapper
     ) {
-        val skuArr = call.argument<ArrayList<String>>("skus")!!
-        val skuList = ArrayList<String>()
+        val skuArr : ArrayList<String> = call.argument<ArrayList<String>>("skus")!!
+        val skuList = ArrayList<QueryProductDetailsParams.Product>()
         for (i in skuArr.indices) {
-            skuList.add(skuArr[i])
+            skuList.add(QueryProductDetailsParams.Product.newBuilder().setProductId(skuArr[i]).setProductType(skuType).build())
         }
 
-        billingClient!!.querySkuDetailsAsync(
-            SkuDetailsParams.newBuilder().setSkusList(skuList).setType(skuType).build()
+        billingClient!!.queryProductDetailsAsync(
+            QueryProductDetailsParams.newBuilder().setProductList(skuList).build()
         ) { billingResult, skuDetailsList ->
             if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                 val errorData = BillingError.getErrorFromResponseData(billingResult.responseCode)
                 safeChannel.error(call.method, errorData.code, errorData.message)
-                return@querySkuDetailsAsync
+                return@queryProductDetailsAsync
             }
-            for (sku in skuDetailsList!!) {
+            for (sku in skuDetailsList) {
                 if (!skus.contains(sku)) {
                     skus.add(sku)
                 }
@@ -414,32 +417,56 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
                 val items = JSONArray()
                 for (skuDetails in skuDetailsList) {
                     val item = JSONObject()
-                    item.put("productId", skuDetails.sku)
-                    item.put("price", (skuDetails.priceAmountMicros / 1000000f).toString())
-                    item.put("currency", skuDetails.priceCurrencyCode)
-                    item.put("type", skuDetails.type)
-                    item.put("localizedPrice", skuDetails.price)
+                    item.put("productId", skuDetails.productId)
+                    item.put("type", skuDetails.productType)
                     item.put("title", skuDetails.title)
                     item.put("description", skuDetails.description)
-                    item.put("introductoryPrice", skuDetails.introductoryPrice)
-                    item.put("subscriptionPeriodAndroid", skuDetails.subscriptionPeriod)
-                    item.put("freeTrialPeriodAndroid", skuDetails.freeTrialPeriod)
-                    item.put("introductoryPriceCyclesAndroid", skuDetails.introductoryPriceCycles)
-                    item.put("introductoryPricePeriodAndroid", skuDetails.introductoryPricePeriod)
-                    // new
-                    item.put("iconUrl", skuDetails.iconUrl)
-                    item.put("originalJson", skuDetails.originalJson)
-                    item.put("originalPrice", (skuDetails.priceAmountMicros / 1000000f).toDouble())
+
+                    if (skuType == BillingClient.ProductType.INAPP) {
+                        item.put("price", ((skuDetails.oneTimePurchaseOfferDetails?.priceAmountMicros ?: 0) / 1000000f).toString())
+                        item.put("currency", skuDetails.oneTimePurchaseOfferDetails?.priceCurrencyCode)
+                        item.put("localizedPrice", skuDetails.oneTimePurchaseOfferDetails?.formattedPrice)
+                        item.put("originalPrice", ((skuDetails.oneTimePurchaseOfferDetails?.priceAmountMicros ?: 0) / 1000000f).toDouble())
+                    } else if (skuType == BillingClient.ProductType.SUBS) {
+                        val subs = JSONArray()
+                        if(skuDetails.subscriptionOfferDetails != null) {
+
+                            for (it in skuDetails.subscriptionOfferDetails!!) {
+                                if (it.offerId != null) {
+                                    // offer
+                                    for (pricing in it.pricingPhases.pricingPhaseList) {
+                                        if (pricing.priceAmountMicros != 0L) continue;
+                                        item.put("freeTrialPeriodAndroid", pricing.billingPeriod)
+                                    }
+                                } else {
+                                    // base plan
+                                    item.put("price", ((skuDetails.oneTimePurchaseOfferDetails?.priceAmountMicros ?: 0) / 1000000f).toString())
+                                    item.put("currency", skuDetails.oneTimePurchaseOfferDetails?.priceCurrencyCode)
+                                    item.put("localizedPrice", skuDetails.oneTimePurchaseOfferDetails?.formattedPrice)
+                                    item.put("originalPrice", ((skuDetails.oneTimePurchaseOfferDetails?.priceAmountMicros ?: 0) / 1000000f).toDouble())
+                                }
+                                for (pricing in it.pricingPhases.pricingPhaseList) {
+                                    val subItem = JSONObject()
+                                    subItem.put("introductoryPrice", pricing.formattedPrice)
+                                    subItem.put("subscriptionPeriodAndroid", pricing.billingPeriod)
+                                    subItem.put("introductoryPriceCyclesAndroid", pricing.billingCycleCount)
+                                    subs.put(subItem)
+                                }
+                            }
+                        }
+                        item.put("subscriptionOfferDetails", subs)
+                    }
+
                     items.put(item)
                 }
                 safeChannel.success(items.toString())
-                return@querySkuDetailsAsync
+                return@queryProductDetailsAsync
             } catch (je: JSONException) {
                 je.printStackTrace()
                 safeChannel.error(TAG, BillingError.E_BILLING_RESPONSE_JSON_PARSE_ERROR, je.message)
             } catch (fe: FlutterException) {
                 safeChannel.error(call.method, fe.message, fe.localizedMessage)
-                return@querySkuDetailsAsync
+                return@queryProductDetailsAsync
             }
         }
     }
@@ -448,16 +475,16 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         call: MethodCall,
         safeChannel: MethodResultWrapper
     ) {
-        val type = if(call.argument<String>("type") == "subs") BillingClient.SkuType.SUBS else BillingClient.SkuType.INAPP
+        val type = if(call.argument<String>("type") == "subs") BillingClient.ProductType.SUBS else BillingClient.ProductType.INAPP
         val obfuscatedAccountId = call.argument<String>("obfuscatedAccountId")
         val obfuscatedProfileId = call.argument<String>("obfuscatedProfileId")
         val sku = call.argument<String>("sku")
         val prorationMode = call.argument<Int>("prorationMode")!!
         val purchaseToken = call.argument<String>("purchaseToken")
         val builder = newBuilder()
-        var selectedSku: SkuDetails? = null
+        var selectedSku: ProductDetails? = null
         for (skuDetail in skus) {
-            if (skuDetail.sku == sku) {
+            if (skuDetail.productId == sku) {
                 selectedSku = skuDetail
                 break
             }
@@ -468,11 +495,14 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
             safeChannel.error(TAG, "buyItemByType", debugMessage)
             return
         }
-        builder.setSkuDetails(selectedSku)
+
+        var arr = ArrayList<ProductDetailsParams>()
+        arr.add(ProductDetailsParams.newBuilder().apply { setProductDetails(selectedSku) }.build())
+        builder.setProductDetailsParamsList(arr)
 
         val params = SubscriptionUpdateParams.newBuilder()
         if (purchaseToken != null) {
-            params.setOldSkuPurchaseToken(purchaseToken)
+            params.setOldPurchaseToken(purchaseToken)
         }
         if (obfuscatedAccountId != null) {
             builder.setObfuscatedAccountId(obfuscatedAccountId)
@@ -484,8 +514,8 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
         when (prorationMode) {
             -1 -> {} //ignore
             ProrationMode.IMMEDIATE_AND_CHARGE_PRORATED_PRICE -> {
-                params.setReplaceSkusProrationMode(ProrationMode.IMMEDIATE_AND_CHARGE_PRORATED_PRICE)
-                if (type != BillingClient.SkuType.SUBS) {
+                params.setReplaceProrationMode(ProrationMode.IMMEDIATE_AND_CHARGE_PRORATED_PRICE)
+                if (type != BillingClient.ProductType.SUBS) {
                     safeChannel.error(
                         TAG,
                         "buyItemByType",
@@ -498,8 +528,8 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
             ProrationMode.DEFERRED,
             ProrationMode.IMMEDIATE_WITH_TIME_PRORATION,
             ProrationMode.IMMEDIATE_AND_CHARGE_FULL_PRICE ->
-                params.setReplaceSkusProrationMode(prorationMode)
-            else -> params.setReplaceSkusProrationMode(ProrationMode.UNKNOWN_SUBSCRIPTION_UPGRADE_DOWNGRADE_POLICY)
+                params.setReplaceProrationMode(prorationMode)
+            else -> params.setReplaceProrationMode(ProrationMode.UNKNOWN_SUBSCRIPTION_UPGRADE_DOWNGRADE_POLICY)
         }
 
         if (purchaseToken != null) {
@@ -574,6 +604,6 @@ class AndroidInappPurchasePlugin internal constructor() : MethodCallHandler,
     companion object {
         private const val TAG = "InappPurchasePlugin"
         private const val PLAY_STORE_URL = "https://play.google.com/store/account/subscriptions"
-        private var skus: ArrayList<SkuDetails> = arrayListOf()
+        private var skus: ArrayList<ProductDetails> = arrayListOf()
     }
 }
